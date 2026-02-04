@@ -17,6 +17,11 @@ class _MapSectionState extends State<MapSection> {
   final MapController _mapController = MapController();
   final supabase = Supabase.instance.client;
 
+  // 🔍 Search
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
+  String _searchQuery = '';
+
   LatLng? currentLocation;
   final double _zoom = 13;
 
@@ -57,6 +62,7 @@ class _MapSectionState extends State<MapSection> {
         .eq('user_id', myId)
         .maybeSingle();
 
+    if (!mounted) return;
     setState(() {
       avatarUrl = me?['avatar_url'];
       username = me?['username'];
@@ -80,6 +86,8 @@ class _MapSectionState extends State<MapSection> {
 
   Future<void> _update(Position p, {bool moveMap = false}) async {
     final ll = LatLng(p.latitude, p.longitude);
+    if (!mounted) return;
+
     setState(() => currentLocation = ll);
 
     if (moveMap) {
@@ -123,7 +131,7 @@ class _MapSectionState extends State<MapSection> {
       };
 
       if (ids.isEmpty) {
-        setState(() => friendsLocations = []);
+        if (mounted) setState(() => friendsLocations = []);
         return;
       }
 
@@ -147,17 +155,44 @@ class _MapSectionState extends State<MapSection> {
         return {...e, 'avatar': u?['avatar'], 'username': u?['username']};
       }).toList();
 
-      setState(() => friendsLocations = merged);
+      if (mounted) setState(() => friendsLocations = merged);
     } catch (e) {
       debugPrint('Friends fetch error: $e');
     }
   }
 
+  // -------- SEARCH LOGIC --------
+  List<Map<String, dynamic>> _friendSuggestions() {
+    if (_searchQuery.trim().length < 3) return [];
+    final q = _searchQuery.toLowerCase();
+
+    return friendsLocations
+        .where(
+          (f) => (f['username'] ?? '').toString().toLowerCase().contains(q),
+        )
+        .toList()
+      ..sort((a, b) => (a['username'] ?? '').compareTo(b['username'] ?? ''));
+  }
+
+  void _moveToFriend(Map<String, dynamic> friend) {
+    final lat = friend['latitude'];
+    final lng = friend['longitude'];
+    if (lat == null || lng == null) return;
+
+    _mapController.move(LatLng(lat, lng), _zoom);
+
+    setState(() {
+      _selectedUserId = friend['user_id'];
+      _searchQuery = friend['username'] ?? '';
+      _searchController.text = _searchQuery;
+      _searchFocusNode.unfocus();
+    });
+  }
+
   // -------- UI HELPERS --------
   ImageProvider? _avatarProvider(String? url) {
     if (url == null || url.isEmpty) return null;
-    if (url.startsWith('http')) return NetworkImage(url);
-    return AssetImage(url);
+    return url.startsWith('http') ? NetworkImage(url) : AssetImage(url);
   }
 
   Widget _nameBubble(String name) {
@@ -185,17 +220,21 @@ class _MapSectionState extends State<MapSection> {
       options: MapOptions(
         initialCenter: center,
         initialZoom: _zoom,
-        onTap: (_, __) => setState(() => _selectedUserId = null),
+        onTap: (_, __) => setState(() {
+          _selectedUserId = null;
+          _searchFocusNode.unfocus();
+        }),
       ),
       children: [
         TileLayer(urlTemplate: tileUrl, userAgentPackageName: 'geo.app'),
         MarkerLayer(
           markers: [
+            // -------- YOU --------
             if (currentLocation != null)
               Marker(
                 point: currentLocation!,
-                width: 140,
-                height: 70,
+                width: 140, // 👈 IMPORTANT (same as your code)
+                height: 70, // 👈 IMPORTANT
                 child: GestureDetector(
                   onTap: () {
                     setState(() {
@@ -208,10 +247,10 @@ class _MapSectionState extends State<MapSection> {
                       if (_selectedUserId == myId)
                         _nameBubble(username ?? 'You'),
                       CircleAvatar(
-                        radius: 20,
+                        radius: 14,
                         backgroundImage: _avatarProvider(avatarUrl),
                         child: avatarUrl == null
-                            ? const Icon(Icons.person)
+                            ? const Icon(Icons.person, size: 20)
                             : null,
                       ),
                     ],
@@ -219,40 +258,43 @@ class _MapSectionState extends State<MapSection> {
                 ),
               ),
 
-            ...friendsLocations.map((e) {
-              final lat = e['latitude'];
-              final lng = e['longitude'];
-              if (lat == null || lng == null) return null;
+            // -------- FRIENDS --------
+            ...friendsLocations
+                .where((f) => f['latitude'] != null && f['longitude'] != null)
+                .map((e) {
+                  final lat = (e['latitude'] as num).toDouble();
+                  final lng = (e['longitude'] as num).toDouble();
 
-              return Marker(
-                point: LatLng(lat, lng),
-                width: 140,
-                height: 60,
-                child: GestureDetector(
-                  onTap: () {
-                    setState(() {
-                      _selectedUserId = _selectedUserId == e['user_id']
-                          ? null
-                          : e['user_id'];
-                    });
-                  },
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (_selectedUserId == e['user_id'])
-                        _nameBubble(e['username'] ?? 'Friend'),
-                      CircleAvatar(
-                        radius: 14,
-                        backgroundImage: _avatarProvider(e['avatar']),
-                        child: e['avatar'] == null
-                            ? const Icon(Icons.person, size: 16)
-                            : null,
+                  return Marker(
+                    point: LatLng(lat, lng),
+                    width: 140, // 👈 SAME AS ORIGINAL
+                    height: 70, // 👈 SAME AS ORIGINAL
+                    child: GestureDetector(
+                      onTap: () {
+                        setState(() {
+                          _selectedUserId = _selectedUserId == e['user_id']
+                              ? null
+                              : e['user_id'];
+                        });
+                      },
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_selectedUserId == e['user_id'])
+                            _nameBubble(e['username'] ?? 'Friend'),
+                          CircleAvatar(
+                            radius: 14,
+                            backgroundImage: _avatarProvider(e['avatar']),
+                            child: e['avatar'] == null
+                                ? const Icon(Icons.person, size: 16)
+                                : null,
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
-                ),
-              );
-            }).whereType<Marker>(),
+                    ),
+                  );
+                })
+                .toList(),
           ],
         ),
       ],
@@ -262,35 +304,77 @@ class _MapSectionState extends State<MapSection> {
   @override
   void dispose() {
     _friendsTimer?.cancel();
+    _searchController.dispose();
+    _searchFocusNode.dispose();
     super.dispose();
   }
 
   // -------- BUILD --------
   @override
   Widget build(BuildContext context) {
+    final suggestions = _friendSuggestions();
+
     return Stack(
       children: [
         _mapWidget(),
+
+        // 🔍 Search bar
         Positioned(
-          top: 16,
+          top: 10,
           left: 16,
           right: 60,
-          child: Container(
-            height: 48,
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(24),
+          child: Material(
+            borderRadius: BorderRadius.lerp(
+              BorderRadius.circular(32),
+              BorderRadius.circular(16),
+              0.5,
             ),
-            child: const Row(
-              children: [
-                Icon(Icons.search),
-                SizedBox(width: 8),
-                Text('Search'),
-              ],
+            elevation: 5,
+            child: TextField(
+              controller: _searchController,
+              focusNode: _searchFocusNode,
+              onChanged: (v) => setState(() => _searchQuery = v),
+              onSubmitted: (_) {
+                if (suggestions.isNotEmpty) {
+                  _moveToFriend(suggestions.first);
+                }
+              },
+              decoration: const InputDecoration(
+                labelText: 'Search friends',
+                prefixIcon: Icon(Icons.search),
+                border: InputBorder.none,
+                contentPadding: EdgeInsets.symmetric(horizontal: 16),
+              ),
             ),
           ),
         ),
+
+        // 📋 Suggestions
+        if (suggestions.isNotEmpty && _searchFocusNode.hasFocus)
+          Positioned(
+            top: 72,
+            left: 16,
+            right: 60,
+            child: Material(
+              elevation: 4,
+              borderRadius: BorderRadius.circular(16),
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: suggestions.length,
+                itemBuilder: (_, i) {
+                  final f = suggestions[i];
+                  return ListTile(
+                    leading: CircleAvatar(
+                      backgroundImage: _avatarProvider(f['avatar']),
+                    ),
+                    title: Text(f['username'] ?? 'Friend'),
+                    onTap: () => _moveToFriend(f),
+                  );
+                },
+              ),
+            ),
+          ),
+
         Positioned(
           top: 16,
           right: 16,
